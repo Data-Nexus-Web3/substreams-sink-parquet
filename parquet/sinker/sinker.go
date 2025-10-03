@@ -137,6 +137,7 @@ func (p *ParquetSinker) HandleBlockUndoSignal(ctx context.Context, undo *pbsubst
 }
 
 func (p *ParquetSinker) consumeProcessingQueue(ctx context.Context) {
+	// Single-threaded fallback; retained for safety
 	for item := range p.processingQueue {
 		_ = p.processBlock(ctx, item.data, item.cursor)
 	}
@@ -189,16 +190,18 @@ func (p *ParquetSinker) processBlock(ctx context.Context, data *pbsubstreamsrpc.
 				if !ok || !fd.IsList() || fd.IsMap() {
 					continue
 				}
-				// Ensure partition file exists even if there are zero elements in this block
-				if _, err := t.writer.AppendRecord(ctx, nil, data.Clock.Number); err != nil {
-					return err
-				}
+				// Build using a worker-local converter to avoid concurrent builder access
+				localConv := NewFieldConverter(fd)
 				list := m.Get(fd).List()
 				for j := 0; j < list.Len(); j++ {
-					t.conv.AppendElement(list.Get(j), fd)
+					localConv.AppendElement(list.Get(j), fd)
 				}
-				r, _ := t.conv.MakeRecord()
+				r, _ := localConv.MakeRecord()
 				if r != nil && r.NumRows() > 0 {
+					// Ensure correct partition rotation for this block
+					if _, err := t.writer.AppendRecord(ctx, nil, data.Clock.Number); err != nil {
+						return err
+					}
 					if p.writeQueue != nil {
 						r.Retain()
 						p.writeQueue <- writeTask{w: t.writer, rec: r, block: data.Clock.Number}
@@ -208,7 +211,6 @@ func (p *ParquetSinker) processBlock(ctx context.Context, data *pbsubstreamsrpc.
 							return err
 						}
 					}
-					t.conv.Reset()
 				}
 			}
 		}

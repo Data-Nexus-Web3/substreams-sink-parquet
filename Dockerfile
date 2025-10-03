@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.24-bullseye AS build
+FROM --platform=$BUILDPLATFORM golang:1.31-bookworm AS build
 
 WORKDIR /src
 
@@ -19,7 +19,7 @@ RUN ls -la /src && ls -la /src/cmd || true && ls -la /src/cmd/substreams-sink-pa
 
 # Build
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -ldflags "-X main.version=$VERSION" -o /src/substreams-sink-parquet ./cmd/substreams-sink-parquet
+    go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o /src/substreams-sink-parquet ./cmd/substreams-sink-parquet
 
 FROM ubuntu:24.04
 

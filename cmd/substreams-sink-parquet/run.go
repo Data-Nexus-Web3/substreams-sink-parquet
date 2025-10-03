@@ -50,6 +50,7 @@ func addParquetFlags(flags *pflag.FlagSet) {
 	flags.Duration("flush-interval", time.Second, "Flush buffered rows at this interval (0=disable time-based flush)")
 	flags.Int("exploded-write-workers", 0, "Concurrent workers for exploded table writes (0=sync)")
 	flags.Int("upload-workers", 2, "Concurrent upload workers per writer (0=sync uploads)")
+	flags.Int("explode-field-workers", 0, "Concurrency for per-field explode build (0=auto)")
 
 	// Explosion control
 	flags.Bool("explode", false, "Explode root-level repeated fields into separate tables (one level only)")
@@ -142,6 +143,7 @@ func sinkRunE(cmd *cobra.Command, args []string) error {
 		FlushInterval:        sflags.MustGetDuration(cmd, "flush-interval"),
 		ExplodedWriteWorkers: sflags.MustGetInt(cmd, "exploded-write-workers"),
 		UploadWorkers:        sflags.MustGetInt(cmd, "upload-workers"),
+		ExplodeFieldWorkers:  sflags.MustGetInt(cmd, "explode-field-workers"),
 	}
 
 	zlog.Info("starting Parquet sink",

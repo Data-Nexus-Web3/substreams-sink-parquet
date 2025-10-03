@@ -55,6 +55,7 @@ type SinkerFactoryOptions struct {
 	FlushInterval        time.Duration
 	ExplodedWriteWorkers int
 	UploadWorkers        int
+	ExplodeFieldWorkers  int
 }
 
 type ParquetSinker struct {
@@ -96,6 +97,9 @@ type ParquetSinker struct {
 
 	// Writer stats previous snapshots for per-second rates
 	prevStats map[string]prevWriterStat
+
+	// options snapshot
+	opts SinkerFactoryOptions
 }
 
 type writeTask struct {
@@ -169,6 +173,7 @@ func SinkerFactory(base *sink.Sinker, opts SinkerFactoryOptions) func(ctx contex
 			processingBufferBytes: opts.ProcessingBufferBytes,
 			processingMaxItems:    opts.ProcessingBufferMaxItems,
 			undoBufferSize:        opts.UndoBufferSize,
+			opts:                  opts,
 		}
 
 		p.partitioner = NewPartitioner(opts.StartBlock, opts.EndBlock, opts.PartitionSize, opts.PadWidth)
@@ -205,13 +210,19 @@ func SinkerFactory(base *sink.Sinker, opts SinkerFactoryOptions) func(ctx contex
 
 		p.prevStats = make(map[string]prevWriterStat)
 
-		if p.processingBufferSize > 0 || p.processingBufferBytes > 0 {
+		if p.processingBufferSize > 0 || p.processingBufferBytes > 0 || opts.ExplodeFieldWorkers > 0 {
 			capItems := p.processingBufferSize
 			if capItems <= 0 {
 				capItems = 1024
 			}
 			p.processingQueue = make(chan bufferedProcessItem, capItems)
-			go p.consumeProcessingQueue(ctx)
+			workers := 1
+			if opts.ExplodeFieldWorkers > 0 {
+				workers = opts.ExplodeFieldWorkers
+			}
+			for i := 0; i < workers; i++ {
+				go p.consumeProcessingQueue(ctx)
+			}
 		}
 
 		if opts.UndoBufferSize > 0 {
