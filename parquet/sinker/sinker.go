@@ -98,6 +98,13 @@ func (p *ParquetSinker) Close() error {
 	}
 	if p.processingQueue != nil {
 		close(p.processingQueue)
+		// wait for processing workers to finish
+		p.procWg.Wait()
+	}
+	if p.writeQueue != nil {
+		close(p.writeQueue)
+		// wait for write workers to drain
+		p.writeWg.Wait()
 	}
 	// Close main writer
 	if p.writer != nil {
@@ -198,10 +205,6 @@ func (p *ParquetSinker) processBlock(ctx context.Context, data *pbsubstreamsrpc.
 				}
 				r, _ := localConv.MakeRecord()
 				if r != nil && r.NumRows() > 0 {
-					// Ensure correct partition rotation for this block
-					if _, err := t.writer.AppendRecord(ctx, nil, data.Clock.Number); err != nil {
-						return err
-					}
 					if p.writeQueue != nil {
 						r.Retain()
 						p.writeQueue <- writeTask{w: t.writer, rec: r, block: data.Clock.Number}

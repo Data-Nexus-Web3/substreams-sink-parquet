@@ -48,10 +48,14 @@ type RotatingParquetWriter struct {
 	uploadTotalDur  time.Duration
 	lastUploadDur   time.Duration
 	lastUploadBytes int64
+
+	// guards and counters
+	completedRanges map[string]struct{}
+	currentFileRows int64
 }
 
 func NewRotatingParquetWriter(store Store, opts SinkerFactoryOptions, schema *arrow.Schema, part *Partitioner, subdir string) *RotatingParquetWriter {
-	w := &RotatingParquetWriter{store: store, opts: opts, schema: schema, part: part, subdir: subdir}
+	w := &RotatingParquetWriter{store: store, opts: opts, schema: schema, part: part, subdir: subdir, completedRanges: make(map[string]struct{})}
 	if opts.UploadWorkers > 0 {
 		w.upCh = make(chan uploadReq, opts.UploadWorkers*2)
 		for i := 0; i < opts.UploadWorkers; i++ {
@@ -82,6 +86,7 @@ func (w *RotatingParquetWriter) openNewFileUnlocked(rs, re uint64) error {
 	w.activeStart = rs
 	w.activeEnd = re
 	w.activeName = name
+	w.currentFileRows = 0
 	// Create parquet writer with proper properties
 	if w.schema != nil {
 		codec := compressionCodec(w.opts.Compression)
@@ -118,6 +123,11 @@ func (w *RotatingParquetWriter) AppendRecord(ctx context.Context, rec arrow.Reco
 
 	// Check if we need to rotate
 	rs, re := w.part.RangeFor(block)
+	// If we haven't opened any file yet, emit empty files for all prior ranges
+	// from configured start up to the current range start.
+	if w.f == nil {
+		w.backfillEmptyUpTo(ctx, rs)
+	}
 	if w.f == nil || rs != w.activeStart || re != w.activeEnd {
 		// Need to rotate - finalize old file and open new one
 		if w.f != nil {
@@ -136,7 +146,9 @@ func (w *RotatingParquetWriter) AppendRecord(ctx context.Context, rec arrow.Reco
 		if err := w.pw.Write(rec); err != nil {
 			return false, fmt.Errorf("parquet write: %w", err)
 		}
-		w.rowsWritten += int64(rec.NumRows())
+		n := int64(rec.NumRows())
+		w.rowsWritten += n
+		w.currentFileRows += n
 	}
 	return false, nil
 }
@@ -191,9 +203,62 @@ func (w *RotatingParquetWriter) finalizeUnlocked(ctx context.Context) error {
 			w.bytesUploaded += sz
 			w.lastFileName = name
 		}
+		// mark this range as completed to avoid accidental re-opens
+		w.completedRanges[name] = struct{}{}
 	}
 
 	return nil
+}
+
+// ensureEmptyPrevRangeIfNeeded emits a single empty Parquet file for the
+// immediately previous range if no file was written for it yet.
+func (w *RotatingParquetWriter) ensureEmptyPrevRangeIfNeeded(ctx context.Context, nextRangeStart uint64) {
+	// Only applies after we've advanced beyond the writer's configured start
+	if nextRangeStart <= w.part.start {
+		return
+	}
+	prevStart := nextRangeStart - w.part.size
+	prevEnd := nextRangeStart
+	if prevStart < w.part.start {
+		return
+	}
+	name := w.part.FileName(prevStart, prevEnd)
+	if w.subdir != "" {
+		name = w.subdir + "/" + name
+	}
+	if _, ok := w.completedRanges[name]; ok {
+		return
+	}
+	// Create and immediately finalize an empty file
+	if err := w.openNewFileUnlocked(prevStart, prevEnd); err == nil {
+		_ = w.finalizeUnlocked(ctx)
+	}
+}
+
+// backfillEmptyUpTo emits empty Parquet files for all partition ranges between
+// the configured start and the provided nextRangeStart, if they have not been
+// produced yet.
+func (w *RotatingParquetWriter) backfillEmptyUpTo(ctx context.Context, nextRangeStart uint64) {
+	if nextRangeStart <= w.part.start {
+		return
+	}
+	// Iterate from p.start in partition steps up to nextRangeStart
+	for rs := w.part.start; rs < nextRangeStart; rs += w.part.size {
+		re := rs + w.part.size
+		if w.part.end > 0 && re > w.part.end {
+			re = w.part.end
+		}
+		name := w.part.FileName(rs, re)
+		if w.subdir != "" {
+			name = w.subdir + "/" + name
+		}
+		if _, ok := w.completedRanges[name]; ok {
+			continue
+		}
+		if err := w.openNewFileUnlocked(rs, re); err == nil {
+			_ = w.finalizeUnlocked(ctx)
+		}
+	}
 }
 
 func (w *RotatingParquetWriter) finalize(ctx context.Context) error {

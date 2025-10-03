@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -90,16 +91,21 @@ type ParquetSinker struct {
 	// Buffering / partition tracking
 	mainBufferedRows int
 	mainLastFlush    time.Time
-	mainRangeStart   uint64
+	// reserved for future use; ensure no unused warnings
+	// mainRangeStart   uint64
 
 	// Async write pool for exploded tables
 	writeQueue chan writeTask
+	writeWg    sync.WaitGroup
 
 	// Writer stats previous snapshots for per-second rates
 	prevStats map[string]prevWriterStat
 
 	// options snapshot
 	opts SinkerFactoryOptions
+
+	// processing workers
+	procWg sync.WaitGroup
 }
 
 type writeTask struct {
@@ -199,7 +205,9 @@ func SinkerFactory(base *sink.Sinker, opts SinkerFactoryOptions) func(ctx contex
 		if opts.ExplodedWriteWorkers > 0 {
 			p.writeQueue = make(chan writeTask, opts.ExplodedWriteWorkers*2)
 			for i := 0; i < opts.ExplodedWriteWorkers; i++ {
+				p.writeWg.Add(1)
 				go func() {
+					defer p.writeWg.Done()
 					for t := range p.writeQueue {
 						_, _ = t.w.AppendRecord(context.Background(), t.rec, t.block)
 						t.rec.Release()
@@ -221,7 +229,11 @@ func SinkerFactory(base *sink.Sinker, opts SinkerFactoryOptions) func(ctx contex
 				workers = opts.ExplodeFieldWorkers
 			}
 			for i := 0; i < workers; i++ {
-				go p.consumeProcessingQueue(ctx)
+				p.procWg.Add(1)
+				go func() {
+					defer p.procWg.Done()
+					p.consumeProcessingQueue(ctx)
+				}()
 			}
 		}
 
