@@ -111,15 +111,15 @@ func sinkRunE(cmd *cobra.Command, args []string) error {
 	}
 
 	// Gather options
-	options := parquetSinker.SinkerFactoryOptions{
+    options := parquetSinker.SinkerFactoryOptions{
 		StoreURL:     storeURL,
 		OutputPrefix: sflags.MustGetString(cmd, "output-prefix"),
 		TmpDir:       sflags.MustGetString(cmd, "tmp-dir"),
 		PadWidth:     sflags.MustGetInt(cmd, "pad-width"),
 
-		// Stream bounds are controlled by base sink (--start-block/--stop-block); we seed partitioner on first block
-		StartBlock:    0,
-		EndBlock:      0,
+        // Anchor partitions to CLI-provided bounds
+        StartBlock:    sflags.MustGetUint64(cmd, "start-block"),
+        EndBlock:      sflags.MustGetUint64(cmd, "stop-block"),
 		PartitionSize: sflags.MustGetUint64(cmd, "partition-size"),
 
 		Compression:      sflags.MustGetString(cmd, "compression"),
