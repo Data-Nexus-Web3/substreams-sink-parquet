@@ -52,6 +52,7 @@ type RotatingParquetWriter struct {
 	// guards and counters
 	completedRanges map[string]struct{}
 	currentFileRows int64
+    lastUploadRows  int64
 }
 
 func NewRotatingParquetWriter(store Store, opts SinkerFactoryOptions, schema *arrow.Schema, part *Partitioner, subdir string) *RotatingParquetWriter {
@@ -87,6 +88,7 @@ func (w *RotatingParquetWriter) openNewFileUnlocked(rs, re uint64) error {
 	w.activeEnd = re
 	w.activeName = name
 	w.currentFileRows = 0
+    w.lastUploadRows = 0
 	// Create parquet writer with proper properties
 	if w.schema != nil {
 		codec := compressionCodec(w.opts.Compression)
@@ -205,6 +207,9 @@ func (w *RotatingParquetWriter) finalizeUnlocked(ctx context.Context) error {
 		}
 		// mark this range as completed to avoid accidental re-opens
 		w.completedRanges[name] = struct{}{}
+        // expose rows written for this finalized file
+        w.lastUploadRows = w.currentFileRows
+        w.currentFileRows = 0
 	}
 
 	return nil
@@ -288,6 +293,7 @@ type WriterStats struct {
 	Inflight     int64
 	LastUploadMs int64
 	LastUploadB  int64
+    LastUploadR  int64
 }
 
 func (w *RotatingParquetWriter) Stats() WriterStats {
@@ -303,6 +309,7 @@ func (w *RotatingParquetWriter) Stats() WriterStats {
 		Inflight:     w.inflightUploads,
 		LastUploadMs: w.lastUploadDur.Milliseconds(),
 		LastUploadB:  w.lastUploadBytes,
+        LastUploadR:  w.lastUploadRows,
 	}
 }
 

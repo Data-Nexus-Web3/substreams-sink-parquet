@@ -36,13 +36,14 @@ func (p *ParquetSinker) Run(ctx context.Context) error {
 					bytesPs = float64(s.Bytes-prev.bytes) / dt
 				}
 				p.prevStats[key] = prevWriterStat{files: s.Files, bytes: s.Bytes, rows: s.Rows, t: now}
-				p.logger.Info("parquet writer stats",
+                p.logger.Info("parquet writer stats",
 					zap.Int64("files", s.Files),
 					zap.Int64("bytes", s.Bytes),
 					zap.Int64("rows", s.Rows),
 					zap.Int64("inflight_uploads", s.Inflight),
 					zap.Int64("last_upload_ms", s.LastUploadMs),
 					zap.Int64("last_upload_bytes", s.LastUploadB),
+                    zap.Int64("last_upload_rows", s.LastUploadR),
 					zap.Float64("rows_per_sec", rowsPs),
 					zap.Float64("bytes_per_sec", bytesPs),
 					zap.String("active_name", s.ActiveName),
@@ -67,7 +68,7 @@ func (p *ParquetSinker) Run(ctx context.Context) error {
 							bytesPs = float64(s.Bytes-prev.bytes) / dt
 						}
 						p.prevStats[name] = prevWriterStat{files: s.Files, bytes: s.Bytes, rows: s.Rows, t: now}
-						p.logger.Info("parquet writer stats",
+                        p.logger.Info("parquet writer stats",
 							zap.String("table", name),
 							zap.Int64("files", s.Files),
 							zap.Int64("bytes", s.Bytes),
@@ -75,6 +76,7 @@ func (p *ParquetSinker) Run(ctx context.Context) error {
 							zap.Int64("inflight_uploads", s.Inflight),
 							zap.Int64("last_upload_ms", s.LastUploadMs),
 							zap.Int64("last_upload_bytes", s.LastUploadB),
+                            zap.Int64("last_upload_rows", s.LastUploadR),
 							zap.Float64("rows_per_sec", rowsPs),
 							zap.Float64("bytes_per_sec", bytesPs),
 							zap.String("active_name", s.ActiveName),
