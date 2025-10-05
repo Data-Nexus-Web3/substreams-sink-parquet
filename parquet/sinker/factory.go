@@ -1,6 +1,7 @@
 package sinker
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"net/url"
@@ -94,9 +95,9 @@ type ParquetSinker struct {
 	// reserved for future use; ensure no unused warnings
 	// mainRangeStart   uint64
 
-	// Async write pool for exploded tables
-	writeQueue chan writeTask
-	writeWg    sync.WaitGroup
+	// legacy fields retained for compatibility; no longer used
+	// writeQueue chan writeTask
+	// writeWg    sync.WaitGroup
 
 	// Writer stats previous snapshots for per-second rates
 	prevStats map[string]prevWriterStat
@@ -114,6 +115,21 @@ type writeTask struct {
 	block uint64
 }
 
+// taskMinHeap orders writeTask by ascending block
+type taskMinHeap []writeTask
+
+func (h taskMinHeap) Len() int            { return len(h) }
+func (h taskMinHeap) Less(i, j int) bool  { return h[i].block < h[j].block }
+func (h taskMinHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *taskMinHeap) Push(x interface{}) { *h = append(*h, x.(writeTask)) }
+func (h *taskMinHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
+
 type prevWriterStat struct {
 	files int64
 	bytes int64
@@ -124,6 +140,8 @@ type ExplodedTable struct {
 	fieldName string
 	conv      *FieldConverter
 	writer    *RotatingParquetWriter
+	ch        chan writeTask
+	wg        sync.WaitGroup
 }
 
 type bufferedProcessItem struct {
@@ -201,18 +219,36 @@ func SinkerFactory(base *sink.Sinker, opts SinkerFactoryOptions) func(ctx contex
 			}
 		}
 
-		// Start worker pool if requested
-		if opts.ExplodedWriteWorkers > 0 {
-			p.writeQueue = make(chan writeTask, opts.ExplodedWriteWorkers*2)
-			for i := 0; i < opts.ExplodedWriteWorkers; i++ {
-				p.writeWg.Add(1)
-				go func() {
-					defer p.writeWg.Done()
-					for t := range p.writeQueue {
-						_, _ = t.w.AppendRecord(context.Background(), t.rec, t.block)
-						t.rec.Release()
+		// Start ordered per-table writer goroutines to serialize AppendRecord
+		if opts.Explode {
+			for _, table := range p.exploded {
+				table.ch = make(chan writeTask, 256)
+				table.wg.Add(1)
+				go func(t *ExplodedTable) {
+					defer t.wg.Done()
+					// Min-heap of pending tasks ordered by block
+					th := &taskMinHeap{}
+					heap.Init(th)
+					for {
+						task, ok := <-t.ch
+						if !ok {
+							// drain remaining in ascending order
+							for th.Len() > 0 {
+								tt := heap.Pop(th).(writeTask)
+								_, _ = t.writer.AppendRecord(context.Background(), tt.rec, tt.block)
+								tt.rec.Release()
+							}
+							return
+						}
+						heap.Push(th, task)
+						// flush everything currently available in ascending order
+						for th.Len() > 0 {
+							tt := heap.Pop(th).(writeTask)
+							_, _ = t.writer.AppendRecord(context.Background(), tt.rec, tt.block)
+							tt.rec.Release()
+						}
 					}
-				}()
+				}(table)
 			}
 		}
 

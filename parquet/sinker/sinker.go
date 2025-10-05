@@ -36,14 +36,14 @@ func (p *ParquetSinker) Run(ctx context.Context) error {
 					bytesPs = float64(s.Bytes-prev.bytes) / dt
 				}
 				p.prevStats[key] = prevWriterStat{files: s.Files, bytes: s.Bytes, rows: s.Rows, t: now}
-                p.logger.Info("parquet writer stats",
+				p.logger.Info("parquet writer stats",
 					zap.Int64("files", s.Files),
 					zap.Int64("bytes", s.Bytes),
 					zap.Int64("rows", s.Rows),
 					zap.Int64("inflight_uploads", s.Inflight),
 					zap.Int64("last_upload_ms", s.LastUploadMs),
 					zap.Int64("last_upload_bytes", s.LastUploadB),
-                    zap.Int64("last_upload_rows", s.LastUploadR),
+					zap.Int64("last_upload_rows", s.LastUploadR),
 					zap.Float64("rows_per_sec", rowsPs),
 					zap.Float64("bytes_per_sec", bytesPs),
 					zap.String("active_name", s.ActiveName),
@@ -68,7 +68,7 @@ func (p *ParquetSinker) Run(ctx context.Context) error {
 							bytesPs = float64(s.Bytes-prev.bytes) / dt
 						}
 						p.prevStats[name] = prevWriterStat{files: s.Files, bytes: s.Bytes, rows: s.Rows, t: now}
-                        p.logger.Info("parquet writer stats",
+						p.logger.Info("parquet writer stats",
 							zap.String("table", name),
 							zap.Int64("files", s.Files),
 							zap.Int64("bytes", s.Bytes),
@@ -76,7 +76,7 @@ func (p *ParquetSinker) Run(ctx context.Context) error {
 							zap.Int64("inflight_uploads", s.Inflight),
 							zap.Int64("last_upload_ms", s.LastUploadMs),
 							zap.Int64("last_upload_bytes", s.LastUploadB),
-                            zap.Int64("last_upload_rows", s.LastUploadR),
+							zap.Int64("last_upload_rows", s.LastUploadR),
 							zap.Float64("rows_per_sec", rowsPs),
 							zap.Float64("bytes_per_sec", bytesPs),
 							zap.String("active_name", s.ActiveName),
@@ -103,10 +103,12 @@ func (p *ParquetSinker) Close() error {
 		// wait for processing workers to finish
 		p.procWg.Wait()
 	}
-	if p.writeQueue != nil {
-		close(p.writeQueue)
-		// wait for write workers to drain
-		p.writeWg.Wait()
+	// close per-table writers
+	for _, table := range p.exploded {
+		if table.ch != nil {
+			close(table.ch)
+			table.wg.Wait()
+		}
 	}
 	// Close main writer
 	if p.writer != nil {
@@ -207,9 +209,9 @@ func (p *ParquetSinker) processBlock(ctx context.Context, data *pbsubstreamsrpc.
 				}
 				r, _ := localConv.MakeRecord()
 				if r != nil && r.NumRows() > 0 {
-					if p.writeQueue != nil {
+					if t.ch != nil {
 						r.Retain()
-						p.writeQueue <- writeTask{w: t.writer, rec: r, block: data.Clock.Number}
+						t.ch <- writeTask{w: t.writer, rec: r, block: data.Clock.Number}
 					} else {
 						defer r.Release()
 						if _, err := t.writer.AppendRecord(ctx, r, data.Clock.Number); err != nil {
